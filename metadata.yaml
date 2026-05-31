@@ -1,0 +1,6 @@
+name: astrbot_plugin_time_memory
+author: asterbot
+desc: "群聊时间与自动关键词记忆插件：感知北京时间，收集群聊近期信息，自动提取关键词并结合群记忆触发 LLM 自然接话。"
+version: "1.0.0"
+repo: ""
+display_name: "群聊时间与自动关键词记忆"

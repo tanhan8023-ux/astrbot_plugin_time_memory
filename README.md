@@ -1,0 +1,53 @@
+# 群聊时间与自动关键词记忆
+
+这个 AstrBot 插件会在群聊里持续记录近期消息，自动调用当前 LLM 提取群内关键词，并把关键词直接加入当前群的关键词库。关键词命中后，插件会结合群聊摘要和最近消息让 LLM 自然接话。
+
+## 功能
+
+- 感知北京时间，支持 `/time`、`现在几点`、`今天几号`。
+- 自动收集群聊近期消息和活跃信息。
+- 每累计一定数量消息后，自动提取关键词、话题词、群内常聊梗。
+- 关键词自动生效，也可以手动添加或删除。
+- 支持“少说话”群规则，降低普通闲聊触发 LLM 的概率。
+
+## 配置
+
+在 AstrBot 插件配置里设置：
+
+```yaml
+timezone: Asia/Shanghai
+trusted_user_ids: []
+recent_message_limit: 80
+keyword_extract_interval: 30
+auto_keyword_limit_per_group: 50
+quiet_reply_probability: 0.18
+default_group_mode: normal
+```
+
+`trusted_user_ids` 必须填写能管理关键词和群规则的用户 ID。可以用 AstrBot 内置 `/sid` 查看自己的用户 ID。
+
+## 命令
+
+- `/time`：查看当前北京时间。
+- `/关键词`：查看当前群关键词库。
+- `/添加关键词 <词>`：手动添加关键词。
+- `/删除关键词 <词>`：删除关键词，并短期阻止自动重新加入。
+- `/群规则`：查看当前群规则。
+- `/群记忆`：查看当前群摘要。
+- `/time_memory_status`：查看插件状态。
+
+白名单用户也可以自然地说：
+
+- `记住这个群少说话`
+- `以后少回复一点`
+- `恢复正常回复`
+
+## 数据文件
+
+插件会在 `data/` 下保存：
+
+- `group_memory.json`
+- `group_keywords.json`
+- `group_rules.json`
+
+保存时会先写临时文件再替换正式文件，降低异常中断造成的数据损坏风险。

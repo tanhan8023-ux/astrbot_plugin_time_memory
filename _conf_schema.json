@@ -1,0 +1,44 @@
+{
+  "timezone": {
+    "description": "时区",
+    "type": "string",
+    "default": "Asia/Shanghai",
+    "hint": "默认北京时间。"
+  },
+  "trusted_user_ids": {
+    "description": "白名单用户 ID",
+    "type": "list",
+    "default": [],
+    "hint": "只有这些用户可以添加/删除关键词、设置少说话。可用 AstrBot 的 /sid 查看。"
+  },
+  "recent_message_limit": {
+    "description": "近期消息保存条数",
+    "type": "int",
+    "default": 80,
+    "hint": "每个群保存的最近消息窗口大小。"
+  },
+  "keyword_extract_interval": {
+    "description": "关键词提取间隔",
+    "type": "int",
+    "default": 30,
+    "hint": "每累计多少条群消息后调用 LLM 自动提取关键词。"
+  },
+  "auto_keyword_limit_per_group": {
+    "description": "每群自动关键词上限",
+    "type": "int",
+    "default": 50,
+    "hint": "超过上限后会优先淘汰低热度自动关键词，手动关键词不会淘汰。"
+  },
+  "quiet_reply_probability": {
+    "description": "少说话模式放行概率",
+    "type": "float",
+    "default": 0.18,
+    "hint": "开启少说话后，普通闲聊进入 LLM 的概率。0.18 表示约 18%。"
+  },
+  "default_group_mode": {
+    "description": "默认群模式",
+    "type": "string",
+    "default": "normal",
+    "hint": "normal 或 quiet。quiet 表示新群默认少说话。"
+  }
+}
