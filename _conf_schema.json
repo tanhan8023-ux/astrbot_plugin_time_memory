@@ -7,9 +7,9 @@
   },
   "trusted_user_ids": {
     "description": "白名单用户 ID",
-    "type": "list",
-    "default": [],
-    "hint": "只有这些用户可以添加/删除关键词、设置少说话。可用 AstrBot 的 /sid 查看。"
+    "type": "string",
+    "default": "",
+    "hint": "只有这些用户可以添加/删除关键词、设置少说话。多个 ID 用英文逗号分隔，例如 123,456。可用 AstrBot 的 /sid 查看。"
   },
   "recent_message_limit": {
     "description": "近期消息保存条数",
@@ -43,14 +43,14 @@
   },
   "panel_keywords": {
     "description": "面板添加关键词",
-    "type": "object",
-    "default": {},
-    "hint": "在面板里维护关键词。格式示例：{\"*\": [\"全局词\"], \"群号\": [\"群内词\"]}。保存配置并重载插件后生效。"
+    "type": "string",
+    "default": "",
+    "hint": "在面板里维护关键词，填 JSON 字符串。示例：{\"*\": [\"全局词\"], \"群号\": [\"群内词\"]}。保存配置并重载插件后生效。"
   },
   "panel_deleted_keywords": {
     "description": "面板屏蔽关键词",
-    "type": "object",
-    "default": {},
-    "hint": "在面板里删除/屏蔽关键词。格式示例：{\"*\": [\"全局屏蔽词\"], \"群号\": [\"群内屏蔽词\"]}。这里的词会从关键词库移除并阻止自动重新加入。"
+    "type": "string",
+    "default": "",
+    "hint": "在面板里删除/屏蔽关键词，填 JSON 字符串。示例：{\"*\": [\"全局屏蔽词\"], \"群号\": [\"群内屏蔽词\"]}。这里的词会从关键词库移除并阻止自动重新加入。"
   }
 }

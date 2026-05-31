@@ -24,7 +24,7 @@ quiet_reply_probability: 0.18
 default_group_mode: normal
 ```
 
-`trusted_user_ids` 必须填写能管理关键词和群规则的用户 ID。可以用 AstrBot 内置 `/sid` 查看自己的用户 ID。
+`trusted_user_ids` 在 AstrBot 面板里填写为字符串，多个 ID 用英文逗号分隔，例如 `123456,789012`。可以用 AstrBot 内置 `/sid` 查看自己的用户 ID。
 
 ## 命令
 
@@ -55,7 +55,7 @@ default_group_mode: normal
 - `panel_keywords`：面板添加关键词。
 - `panel_deleted_keywords`：面板删除/屏蔽关键词。
 
-格式示例：
+这两个字段在 AstrBot 面板里都填 JSON 字符串，格式示例：
 
 ```json
 {

@@ -97,14 +97,14 @@ class TimeMemoryPlugin(Star):
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.timezone_name = str(self.config.get("timezone") or "Asia/Shanghai")
-        self.trusted_user_ids = {str(x) for x in self.config.get("trusted_user_ids", [])}
+        self.trusted_user_ids = self._normalize_id_set(self.config.get("trusted_user_ids", ""))
         self.recent_message_limit = int(self.config.get("recent_message_limit", 80))
         self.keyword_extract_interval = int(self.config.get("keyword_extract_interval", 30))
         self.auto_keyword_limit_per_group = int(self.config.get("auto_keyword_limit_per_group", 50))
         self.quiet_reply_probability = float(self.config.get("quiet_reply_probability", 0.18))
         self.default_group_mode = str(self.config.get("default_group_mode") or "normal")
-        self.panel_keywords = self._normalize_panel_mapping(self.config.get("panel_keywords", {}))
-        self.panel_deleted_keywords = self._normalize_panel_mapping(self.config.get("panel_deleted_keywords", {}))
+        self.panel_keywords = self._normalize_panel_mapping(self.config.get("panel_keywords", ""))
+        self.panel_deleted_keywords = self._normalize_panel_mapping(self.config.get("panel_deleted_keywords", ""))
 
         self.memory_path = self.data_dir / "group_memory.json"
         self.keywords_path = self.data_dir / "group_keywords.json"
@@ -384,8 +384,37 @@ class TimeMemoryPlugin(Star):
             return ""
         return keyword
 
+    def _normalize_id_set(self, raw: Any) -> set[str]:
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return set()
+            try:
+                decoded = json.loads(text)
+            except Exception:
+                decoded = re.split(r"[,，、\s\n]+", text)
+            raw = decoded
+        if isinstance(raw, (list, tuple, set)):
+            return {str(x).strip() for x in raw if str(x).strip()}
+        if raw:
+            return {str(raw).strip()}
+        return set()
+
     def _normalize_panel_mapping(self, raw: Any) -> dict[str, set[str]]:
         result: dict[str, set[str]] = {}
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return result
+            try:
+                raw = json.loads(text)
+            except Exception:
+                result["*"] = {
+                    word
+                    for word in (self._normalize_keyword(x) for x in re.split(r"[,，、\n]+", text))
+                    if word
+                }
+                return result
         if isinstance(raw, dict):
             items = raw.items()
         elif isinstance(raw, list):
