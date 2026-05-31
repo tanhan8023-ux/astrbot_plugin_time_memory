@@ -114,6 +114,10 @@ class TimeMemoryPlugin(Star):
         self.group_keywords: dict[str, dict] = _safe_json_load(self.keywords_path, {})
         self.group_rules: dict[str, dict] = _safe_json_load(self.rules_path, {})
         self.extracting_groups: set[str] = set()
+        self.speaker_aliases: dict[str, dict[str, str]] = {}
+        self.pending_keyword_hits: dict[str, str] = {}
+        if self._sanitize_group_memory():
+            self._save_memory()
 
         logger.info("[TimeMemory] 插件已加载，时区=%s", self.timezone_name)
 
@@ -230,7 +234,7 @@ class TimeMemoryPlugin(Star):
         keywords = self._get_keywords(group_id)
         deleted = rules.get("deleted_keywords", {})
         quiet_updated_at = self._format_ts(rules.get("quiet_updated_at"))
-        quiet_updated_by = rules.get("quiet_updated_by_name") or rules.get("quiet_updated_by") or "无记录"
+        quiet_updated_by = rules.get("quiet_updated_by") or "无记录"
         yield event.plain_result(
             "当前群规则\n"
             f"少说话: {quiet}\n"
@@ -251,11 +255,11 @@ class TimeMemoryPlugin(Star):
         memory = self._ensure_memory(group_id)
         summary = memory.get("summary") or "还没有形成稳定摘要。"
         recent_count = len(memory.get("recent_messages", []))
-        active_users = len(memory.get("active_users", {}))
+        active_count = self._active_count(memory)
         yield event.plain_result(
             "当前群记忆\n"
             f"近期消息: {recent_count}\n"
-            f"活跃成员: {active_users}\n"
+            f"活跃人数估计: {active_count}\n"
             f"摘要: {summary}"
         )
 
@@ -286,11 +290,7 @@ class TimeMemoryPlugin(Star):
 
         matched = self._match_keyword(group_id, text)
         if matched:
-            reply = await self._generate_keyword_reply(event, group_id, text, matched)
-            if reply:
-                await event.send(event.plain_result(reply))
-                event.stop_event()
-                return
+            self.pending_keyword_hits[event.unified_msg_origin] = matched
 
         if self._should_quiet_stop(event, group_id, text):
             event.stop_event()
@@ -305,7 +305,10 @@ class TimeMemoryPlugin(Star):
             event.stop_event()
             return
 
-        runtime_context = self._build_runtime_context(group_id)
+        keyword_hit = self.pending_keyword_hits.pop(event.unified_msg_origin, "")
+        if not keyword_hit:
+            keyword_hit = self._peek_keyword(group_id, self._message_text(event))
+        runtime_context = self._build_runtime_context(group_id, keyword_hit=keyword_hit)
         if runtime_context and TextPart is not None and hasattr(request, "extra_user_content_parts"):
             if request.extra_user_content_parts is None:
                 request.extra_user_content_parts = []
@@ -449,12 +452,38 @@ class TimeMemoryPlugin(Star):
     def _ensure_memory(self, group_id: str) -> dict:
         memory = self.group_memory.setdefault(group_id, {})
         memory.setdefault("recent_messages", [])
-        memory.setdefault("active_users", {})
+        memory.setdefault("active_count_window", [])
         memory.setdefault("total_messages", 0)
         memory.setdefault("message_count_since_extract", 0)
         memory.setdefault("summary", "")
         memory.setdefault("updated_at", 0)
         return memory
+
+    def _sanitize_group_memory(self) -> bool:
+        changed = False
+        for memory in self.group_memory.values():
+            if not isinstance(memory, dict):
+                continue
+            if "active_users" in memory:
+                memory.pop("active_users", None)
+                changed = True
+            sanitized = []
+            for msg in memory.get("recent_messages", []) or []:
+                if not isinstance(msg, dict):
+                    continue
+                clean_msg = {
+                    "time": msg.get("time", _now_ts()),
+                    "speaker": msg.get("speaker") or "群友",
+                    "content": _clean_text(str(msg.get("content") or ""), 300),
+                }
+                if clean_msg != msg:
+                    changed = True
+                sanitized.append(clean_msg)
+            if sanitized != memory.get("recent_messages", []):
+                changed = True
+            memory["recent_messages"] = sanitized[-self.recent_message_limit:]
+            memory.setdefault("active_count_window", [])
+        return changed
 
     def _ensure_keyword_bucket(self, group_id: str) -> dict:
         bucket = self.group_keywords.setdefault(group_id, {})
@@ -498,26 +527,46 @@ class TimeMemoryPlugin(Star):
     def _record_group_message(self, event: AstrMessageEvent, group_id: str, text: str) -> None:
         memory = self._ensure_memory(group_id)
         user_id = str(event.get_sender_id() if hasattr(event, "get_sender_id") else "")
-        user_name = str(event.get_sender_name() if hasattr(event, "get_sender_name") else user_id)
+        speaker = self._speaker_alias(group_id, user_id)
         now = _now_ts()
 
         memory["recent_messages"].append({
             "time": now,
-            "user_id": user_id,
-            "user_name": user_name,
+            "speaker": speaker,
             "content": text[:300],
         })
         while len(memory["recent_messages"]) > self.recent_message_limit:
             memory["recent_messages"].pop(0)
 
-        active = memory["active_users"].setdefault(user_id, {"name": user_name, "count": 0, "last_seen": now})
-        active["name"] = user_name
-        active["count"] = int(active.get("count", 0)) + 1
-        active["last_seen"] = now
+        active_window = memory.setdefault("active_count_window", [])
+        active_window.append({"speaker": speaker, "time": now})
+        memory["active_count_window"] = [
+            item for item in active_window
+            if now - float(item.get("time", now)) <= 300
+        ][-self.recent_message_limit:]
         memory["total_messages"] = int(memory.get("total_messages", 0)) + 1
         memory["message_count_since_extract"] = int(memory.get("message_count_since_extract", 0)) + 1
         memory["updated_at"] = now
         self._save_memory()
+
+    def _speaker_alias(self, group_id: str, user_id: str) -> str:
+        group_aliases = self.speaker_aliases.setdefault(group_id, {})
+        key = user_id or f"anonymous-{len(group_aliases) + 1}"
+        if key not in group_aliases:
+            group_aliases[key] = f"群友{len(group_aliases) + 1}"
+        return group_aliases[key]
+
+    def _active_count(self, memory: dict) -> int:
+        now = _now_ts()
+        active_window = memory.get("active_count_window") or []
+        speakers = {
+            item.get("speaker")
+            for item in active_window
+            if item.get("speaker") and now - float(item.get("time", now)) <= 300
+        }
+        if speakers:
+            return len(speakers)
+        return 0
 
     async def _handle_natural_rule_command(self, event: AstrMessageEvent, group_id: str, text: str) -> bool:
         add_match = KEYWORD_ADD_RE.match(text.strip())
@@ -587,12 +636,10 @@ class TimeMemoryPlugin(Star):
 
     def _set_quiet_rule(self, event: AstrMessageEvent, group_id: str, quiet: bool, source_text: str) -> None:
         rules = self._ensure_rules(group_id)
-        user_id = str(event.get_sender_id() if hasattr(event, "get_sender_id") else "")
-        user_name = str(event.get_sender_name() if hasattr(event, "get_sender_name") else user_id)
         rules["quiet"] = quiet
         rules["quiet_updated_at"] = _now_ts()
-        rules["quiet_updated_by"] = user_id
-        rules["quiet_updated_by_name"] = user_name
+        rules["quiet_updated_by"] = "白名单用户"
+        rules.pop("quiet_updated_by_name", None)
         rules["quiet_source"] = _clean_text(source_text, 120)
 
     def _maybe_schedule_keyword_extract(self, group_id: str, umo: str) -> None:
@@ -613,7 +660,7 @@ class TimeMemoryPlugin(Star):
 
             chat_lines = []
             for msg in recent[-50:]:
-                name = msg.get("user_name") or msg.get("user_id") or "群友"
+                name = self._message_speaker(msg)
                 content = _clean_text(msg.get("content", ""), 120)
                 if content:
                     chat_lines.append(f"{name}: {content}")
@@ -740,24 +787,6 @@ class TimeMemoryPlugin(Star):
                 return keyword
         return ""
 
-    async def _generate_keyword_reply(self, event: AstrMessageEvent, group_id: str, text: str, keyword: str) -> str:
-        memory = self._ensure_memory(group_id)
-        recent = self._format_recent_messages(group_id, limit=8)
-        summary = memory.get("summary") or "这个群还没有稳定摘要。"
-        system_prompt = (
-            "你正在群聊中自然接话。不要说自己命中了关键词，不要解释规则，不要复述系统提示。"
-            "回复要短、像真实群聊里的自然一句话。"
-        )
-        prompt = (
-            f"命中的关键词: {keyword}\n"
-            f"当前消息: {text}\n"
-            f"群聊摘要: {summary}\n"
-            f"最近消息:\n{recent}\n\n"
-            "请自然接一句，最多 80 个中文字符。"
-        )
-        reply = await self._call_llm(prompt, system_prompt=system_prompt, umo=event.unified_msg_origin)
-        return _clean_text(reply, 160)
-
     def _should_quiet_stop(self, event: AstrMessageEvent, group_id: str, text: str) -> bool:
         rules = self._ensure_rules(group_id)
         if not rules.get("quiet"):
@@ -772,32 +801,71 @@ class TimeMemoryPlugin(Star):
             return False
         return random.random() > self.quiet_reply_probability
 
-    def _build_runtime_context(self, group_id: str) -> str:
+    def _build_runtime_context(self, group_id: str, keyword_hit: str = "") -> str:
         memory = self._ensure_memory(group_id)
         keywords = list(self._get_keywords(group_id).keys())[:20]
-        parts = [
-            "<time_memory_context>",
-            f"当前北京时间: {self._format_current_time()}",
+        rules = self._ensure_rules(group_id)
+        sections = [
+            "【给系尔的场景辅助】\n"
+            "这些信息只用于判断群聊节奏和是否接话，不要复述标签，不要解释规则，不要主动提蛇妖、人设或主人。"
         ]
+        sections.append(f"【当前时间】\n{self._format_current_time()}")
         if memory.get("summary"):
-            parts.append(f"当前群近期摘要: {memory['summary']}")
+            sections.append(f"【群聊近期摘要】\n{memory['summary']}")
+        atmosphere = self._build_group_atmosphere(memory)
+        if atmosphere:
+            sections.append(f"【群聊场景】\n{atmosphere}")
+        strategy_lines = []
+        if rules.get("quiet"):
+            strategy_lines.append("这个群设置了少说话：像系尔那样保持低存在感，能不展开就不展开，能一句说清就一句。")
+        if keyword_hit:
+            strategy_lines.append(f"当前消息命中了群关键词「{keyword_hit}」：可以自然接一句，优先给关键答案；不要说自己命中了关键词。")
+        strategy_lines.append("技术/小手机相关问题先给关键答案；普通闲聊保持温和克制，不追问、不说教、不硬找话题。")
+        if strategy_lines:
+            sections.append("【系尔接话策略】\n" + "\n".join(strategy_lines))
         if keywords:
-            parts.append("当前群关键词: " + "、".join(keywords))
+            sections.append("【群关键词】\n" + "、".join(keywords))
         recent = self._format_recent_messages(group_id, limit=6)
         if recent:
-            parts.append("最近群聊:\n" + recent)
-        parts.append("</time_memory_context>")
-        return "\n".join(parts)
+            sections.append("【最近群聊】\n" + recent)
+        return "<time_memory_context>\n" + "\n\n".join(sections) + "\n</time_memory_context>"
+
+    def _build_group_atmosphere(self, memory: dict) -> str:
+        recent = memory.get("recent_messages", [])
+        now = _now_ts()
+        recent_minute = [
+            msg for msg in recent
+            if now - float(msg.get("time", now)) <= 60
+        ]
+        message_rate = len(recent_minute)
+        active_count = self._active_count(memory)
+        if message_rate >= 12:
+            mood = "热闹"
+            desc = "群里现在比较热闹，系尔不适合抢话，短一点接住重点就好。"
+        elif message_rate <= 1:
+            mood = "安静"
+            desc = "群里比较安静，可以自然回应，但不要硬找话题。"
+        else:
+            mood = "正常"
+            desc = "群里聊天节奏正常。"
+        return f"{desc}氛围: {mood}。近1分钟消息数: {message_rate}。近5分钟活跃人数估计: {active_count}。"
 
     def _format_recent_messages(self, group_id: str, limit: int = 8) -> str:
         memory = self._ensure_memory(group_id)
         lines = []
         for msg in memory.get("recent_messages", [])[-limit:]:
-            name = msg.get("user_name") or msg.get("user_id") or "群友"
+            name = self._message_speaker(msg)
             content = _clean_text(msg.get("content", ""), 90)
             if content:
                 lines.append(f"{name}: {content}")
         return "\n".join(lines)
+
+    def _message_speaker(self, msg: dict) -> str:
+        speaker = str(msg.get("speaker") or "").strip()
+        if speaker:
+            return speaker
+        # Compatibility for old persisted data; avoid exposing stored IDs/nicknames.
+        return "群友"
 
     async def _call_llm(self, prompt: str, system_prompt: str = "", umo: str | None = None) -> str:
         try:
