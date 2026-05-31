@@ -105,6 +105,8 @@ class TimeMemoryPlugin(Star):
         self.default_group_mode = str(self.config.get("default_group_mode") or "normal")
         self.panel_keywords = self._normalize_panel_mapping(self.config.get("panel_keywords", ""))
         self.panel_deleted_keywords = self._normalize_panel_mapping(self.config.get("panel_deleted_keywords", ""))
+        self.panel_quiet_groups = self._normalize_group_set(self.config.get("panel_quiet_groups", ""))
+        self.panel_normal_groups = self._normalize_group_set(self.config.get("panel_normal_groups", ""))
 
         self.memory_path = self.data_dir / "group_memory.json"
         self.keywords_path = self.data_dir / "group_keywords.json"
@@ -400,6 +402,23 @@ class TimeMemoryPlugin(Star):
             return {str(raw).strip()}
         return set()
 
+    def _normalize_group_set(self, raw: Any) -> set[str]:
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return set()
+            try:
+                raw = json.loads(text)
+            except Exception:
+                raw = re.split(r"[,，、\s\n]+", text)
+        if isinstance(raw, dict):
+            raw = raw.keys()
+        if isinstance(raw, (list, tuple, set)):
+            return {str(x).strip() for x in raw if str(x).strip()}
+        if raw:
+            return {str(raw).strip()}
+        return set()
+
     def _normalize_panel_mapping(self, raw: Any) -> dict[str, set[str]]:
         result: dict[str, set[str]] = {}
         if isinstance(raw, str):
@@ -571,6 +590,12 @@ class TimeMemoryPlugin(Star):
         rules = self.group_rules.setdefault(group_id, {})
         rules.setdefault("quiet", self.default_group_mode == "quiet")
         rules.setdefault("deleted_keywords", {})
+        if group_id in self.panel_quiet_groups:
+            rules["quiet"] = True
+            rules.setdefault("quiet_updated_by", "面板配置")
+        if group_id in self.panel_normal_groups:
+            rules["quiet"] = False
+            rules.setdefault("quiet_updated_by", "面板配置")
         return rules
 
     def _record_group_message(self, event: AstrMessageEvent, group_id: str, text: str) -> None:

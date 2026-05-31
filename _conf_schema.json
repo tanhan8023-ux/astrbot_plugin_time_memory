@@ -41,6 +41,18 @@
     "default": "normal",
     "hint": "normal 或 quiet。quiet 表示新群默认少说话。"
   },
+  "panel_quiet_groups": {
+    "description": "面板指定少说话群",
+    "type": "string",
+    "default": "",
+    "hint": "一行一个群号，或用英文逗号分隔。这里的群会强制开启少说话。"
+  },
+  "panel_normal_groups": {
+    "description": "面板指定正常回复群",
+    "type": "string",
+    "default": "",
+    "hint": "一行一个群号，或用英文逗号分隔。这里的群会强制关闭少说话，用于覆盖 default_group_mode 或撤销面板少说话。"
+  },
   "panel_keywords": {
     "description": "面板添加关键词",
     "type": "string",

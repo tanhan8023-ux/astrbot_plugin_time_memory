@@ -22,11 +22,22 @@ keyword_extract_interval: 30
 auto_keyword_limit_per_group: 50
 quiet_reply_probability: 0.18
 default_group_mode: normal
+panel_quiet_groups: ""
+panel_normal_groups: ""
 ```
 
 `trusted_user_ids` 在 AstrBot 面板里填写为字符串，多个 ID 用英文逗号分隔，例如 `123456,789012`。可以用 AstrBot 内置 `/sid` 查看自己的用户 ID。
 
 本插件不会保存群友画像、好感度、用户备注或个人长期记忆。`trusted_user_ids` 只用于权限判断。
+
+如果要在面板指定某些群少说话，在 `panel_quiet_groups` 里一行一个群号：
+
+```text
+123456789
+987654321
+```
+
+要恢复某个群正常回复，把群号放进 `panel_normal_groups`，保存配置并重载插件即可。
 
 ## 命令
 
