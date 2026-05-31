@@ -39,8 +39,8 @@ QUIET_OFF_RE = re.compile(
     r"(?:恢复|取消|不用|解除|关闭).{0,20}(?:少说话|少回复|安静|沉默|闭嘴|少插话)"
     r"|(?:正常回复|恢复回复|可以说话了|多说点)"
 )
-KEYWORD_ADD_RE = re.compile(r"^(?:添加|新增|加入|记住)(?:关键词|关键字)\s+(.+)$")
-KEYWORD_DELETE_RE = re.compile(r"^(?:删除|移除|取消|屏蔽)(?:关键词|关键字)\s+(.+)$")
+KEYWORD_ADD_RE = re.compile(r"^(?:添加|新增|加入|记住)(?:关键词|关键字)\s*[:：#]?\s*(.+)$")
+KEYWORD_DELETE_RE = re.compile(r"^(?:删除|移除|取消|屏蔽|删掉?|去掉?)(?:关键词|关键字)\s*[:：#]?\s*(.+)$")
 MENTION_RE = re.compile(r"@\S+")
 
 
@@ -161,17 +161,14 @@ class TimeMemoryPlugin(Star):
             yield event.plain_result("这个群还没有关键词。聊一会儿后我会自己提取，也可以用 /添加关键词 <词> 手动添加。")
             return
 
-        items = sorted(
-            keywords.values(),
-            key=lambda x: (bool(x.get("manual")), float(x.get("heat", 0)), int(x.get("occurrences", 0))),
-            reverse=True,
-        )[:30]
+        items = self._sorted_keyword_items(group_id)[:30]
         lines = ["当前群关键词:"]
-        for item in items:
+        for index, item in enumerate(items, start=1):
             mark = "手动" if item.get("manual") else "自动"
             heat = float(item.get("heat", 0))
             count = int(item.get("occurrences", 0))
-            lines.append(f"- {item.get('keyword')} ({mark}, 热度 {heat:.2f}, {count} 次)")
+            lines.append(f"{index}. {item.get('keyword')} ({mark}, 热度 {heat:.2f}, {count} 次)")
+        lines.append("删除可用: /删除关键词 2 或 /删除关键词 <词>")
         yield event.plain_result("\n".join(lines))
 
     @filter.command("add_keyword", alias={"添加关键词"})
@@ -210,10 +207,10 @@ class TimeMemoryPlugin(Star):
             yield event.plain_result("只有白名单用户可以删除关键词。")
             return
 
-        keyword = self._extract_command_arg(event, {"delete_keyword", "删除关键词"})
-        keyword = self._normalize_keyword(keyword)
+        keyword_arg = self._extract_command_arg(event, {"delete_keyword", "删除关键词"})
+        keyword = self._resolve_keyword_arg(group_id, keyword_arg)
         if not keyword:
-            yield event.plain_result("用法: /删除关键词 <词>")
+            yield event.plain_result("用法: /删除关键词 <编号或词>")
             return
 
         removed = self._delete_keyword(group_id, keyword)
@@ -412,11 +409,7 @@ class TimeMemoryPlugin(Star):
             try:
                 raw = json.loads(text)
             except Exception:
-                result["*"] = {
-                    word
-                    for word in (self._normalize_keyword(x) for x in re.split(r"[,，、\n]+", text))
-                    if word
-                }
+                result = self._parse_panel_lines(text)
                 return result
         if isinstance(raw, dict):
             items = raw.items()
@@ -442,6 +435,34 @@ class TimeMemoryPlugin(Star):
             cleaned.discard("")
             if cleaned:
                 result[key] = cleaned
+        return result
+
+    def _parse_panel_lines(self, text: str) -> dict[str, set[str]]:
+        result: dict[str, set[str]] = {}
+        current_group = "*"
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            group_match = re.match(r"^(?:群|group)\s*[:：]\s*(.+)$", line, re.I)
+            if group_match:
+                current_group = group_match.group(1).strip() or "*"
+                result.setdefault(current_group, set())
+                continue
+            inline_group = re.match(r"^(.+?)\s*[:：]\s*(.+)$", line)
+            if inline_group and re.search(r"\d|\*", inline_group.group(1)):
+                group = inline_group.group(1).strip() or "*"
+                words_text = inline_group.group(2)
+            else:
+                group = current_group
+                words_text = line
+            words = {
+                word
+                for word in (self._normalize_keyword(x) for x in re.split(r"[,，、;；\n]+", words_text))
+                if word
+            }
+            if words:
+                result.setdefault(group, set()).update(words)
         return result
 
     def _panel_words_for_group(self, mapping: dict[str, set[str]], group_id: str) -> set[str]:
@@ -497,6 +518,34 @@ class TimeMemoryPlugin(Star):
 
     def _keyword_count(self, group_id: str) -> int:
         return len(self._get_keywords(group_id)) if group_id else 0
+
+    def _sorted_keyword_items(self, group_id: str) -> list[dict]:
+        return sorted(
+            self._get_keywords(group_id).values(),
+            key=lambda x: (bool(x.get("manual")), float(x.get("heat", 0)), int(x.get("occurrences", 0))),
+            reverse=True,
+        )
+
+    def _resolve_keyword_arg(self, group_id: str, raw_arg: str) -> str:
+        arg = _clean_text(raw_arg, 60).strip("#＃ ")
+        if not arg:
+            return ""
+        items = self._sorted_keyword_items(group_id)
+        if arg.isdigit():
+            index = int(arg)
+            if 1 <= index <= len(items):
+                return str(items[index - 1].get("keyword") or "")
+        normalized = self._normalize_keyword(arg)
+        keywords = self._get_keywords(group_id)
+        if normalized in keywords:
+            return normalized
+        matches = [
+            key for key in keywords
+            if normalized and (normalized in key or key in normalized)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return normalized
 
     def _apply_panel_keywords(self, group_id: str, keywords: dict) -> None:
         deleted_words = set(self._ensure_rules(group_id).get("deleted_keywords", {}).keys())
@@ -598,7 +647,7 @@ class TimeMemoryPlugin(Star):
                 await event.send(event.plain_result("只有白名单用户可以删除关键词。"))
                 event.stop_event()
                 return True
-            keyword = self._normalize_keyword(delete_match.group(1))
+            keyword = self._resolve_keyword_arg(group_id, delete_match.group(1))
             if not keyword:
                 await event.send(event.plain_result("没看清要删除哪个关键词。"))
                 event.stop_event()
