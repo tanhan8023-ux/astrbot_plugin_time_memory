@@ -40,5 +40,17 @@
     "type": "string",
     "default": "normal",
     "hint": "normal 或 quiet。quiet 表示新群默认少说话。"
+  },
+  "panel_keywords": {
+    "description": "面板添加关键词",
+    "type": "object",
+    "default": {},
+    "hint": "在面板里维护关键词。格式示例：{\"*\": [\"全局词\"], \"群号\": [\"群内词\"]}。保存配置并重载插件后生效。"
+  },
+  "panel_deleted_keywords": {
+    "description": "面板屏蔽关键词",
+    "type": "object",
+    "default": {},
+    "hint": "在面板里删除/屏蔽关键词。格式示例：{\"*\": [\"全局屏蔽词\"], \"群号\": [\"群内屏蔽词\"]}。这里的词会从关键词库移除并阻止自动重新加入。"
   }
 }

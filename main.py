@@ -30,6 +30,8 @@ TIME_QUERY_RE = re.compile(
 )
 QUIET_ON_RE = re.compile(r"(记住|以后|这个群|群里).{0,12}(少说话|少回复|安静点|别太吵)")
 QUIET_OFF_RE = re.compile(r"(恢复|取消|不用).{0,12}(少说话|少回复|安静|沉默)")
+KEYWORD_ADD_RE = re.compile(r"^(?:添加|新增|加入|记住)(?:关键词|关键字)\s+(.+)$")
+KEYWORD_DELETE_RE = re.compile(r"^(?:删除|移除|取消|屏蔽)(?:关键词|关键字)\s+(.+)$")
 MENTION_RE = re.compile(r"@\S+")
 
 
@@ -92,6 +94,8 @@ class TimeMemoryPlugin(Star):
         self.auto_keyword_limit_per_group = int(self.config.get("auto_keyword_limit_per_group", 50))
         self.quiet_reply_probability = float(self.config.get("quiet_reply_probability", 0.18))
         self.default_group_mode = str(self.config.get("default_group_mode") or "normal")
+        self.panel_keywords = self._normalize_panel_mapping(self.config.get("panel_keywords", {}))
+        self.panel_deleted_keywords = self._normalize_panel_mapping(self.config.get("panel_deleted_keywords", {}))
 
         self.memory_path = self.data_dir / "group_memory.json"
         self.keywords_path = self.data_dir / "group_keywords.json"
@@ -199,11 +203,7 @@ class TimeMemoryPlugin(Star):
             yield event.plain_result("用法: /删除关键词 <词>")
             return
 
-        removed = self._get_keywords(group_id).pop(keyword, None)
-        rules = self._ensure_rules(group_id)
-        rules.setdefault("deleted_keywords", {})[keyword] = _now_ts()
-        self._save_keywords()
-        self._save_rules()
+        removed = self._delete_keyword(group_id, keyword)
         if removed:
             yield event.plain_result(f"已删除关键词: {keyword}")
         else:
@@ -267,10 +267,9 @@ class TimeMemoryPlugin(Star):
             event.stop_event()
             return
 
-        if self._is_trusted(event):
-            handled = await self._handle_natural_rule_command(event, group_id, text)
-            if handled:
-                return
+        handled = await self._handle_natural_rule_command(event, group_id, text)
+        if handled:
+            return
 
         matched = self._match_keyword(group_id, text)
         if matched:
@@ -358,6 +357,39 @@ class TimeMemoryPlugin(Star):
             return ""
         return keyword
 
+    def _normalize_panel_mapping(self, raw: Any) -> dict[str, set[str]]:
+        result: dict[str, set[str]] = {}
+        if isinstance(raw, dict):
+            items = raw.items()
+        elif isinstance(raw, list):
+            items = []
+            for entry in raw:
+                if isinstance(entry, dict):
+                    group_id = entry.get("group_id") or entry.get("group") or "*"
+                    keywords = entry.get("keywords") or entry.get("words") or []
+                    items.append((group_id, keywords))
+        else:
+            items = []
+
+        for group_id, keywords in items:
+            key = str(group_id or "*")
+            if isinstance(keywords, str):
+                parts = re.split(r"[,，、\n]+", keywords)
+            elif isinstance(keywords, list):
+                parts = keywords
+            else:
+                continue
+            cleaned = {self._normalize_keyword(str(x)) for x in parts}
+            cleaned.discard("")
+            if cleaned:
+                result[key] = cleaned
+        return result
+
+    def _panel_words_for_group(self, mapping: dict[str, set[str]], group_id: str) -> set[str]:
+        words = set(mapping.get("*", set()))
+        words.update(mapping.get(group_id, set()))
+        return words
+
     def _ensure_memory(self, group_id: str) -> dict:
         memory = self.group_memory.setdefault(group_id, {})
         memory.setdefault("recent_messages", [])
@@ -374,10 +406,32 @@ class TimeMemoryPlugin(Star):
         return bucket
 
     def _get_keywords(self, group_id: str) -> dict:
-        return self._ensure_keyword_bucket(group_id)["keywords"]
+        keywords = self._ensure_keyword_bucket(group_id)["keywords"]
+        self._apply_panel_keywords(group_id, keywords)
+        return keywords
 
     def _keyword_count(self, group_id: str) -> int:
         return len(self._get_keywords(group_id)) if group_id else 0
+
+    def _apply_panel_keywords(self, group_id: str, keywords: dict) -> None:
+        deleted_words = set(self._ensure_rules(group_id).get("deleted_keywords", {}).keys())
+        deleted_words.update(self._panel_words_for_group(self.panel_deleted_keywords, group_id))
+        for keyword in deleted_words:
+            keywords.pop(keyword, None)
+        for keyword in self._panel_words_for_group(self.panel_keywords, group_id):
+            if keyword in deleted_words:
+                continue
+            if keyword not in keywords:
+                keywords[keyword] = {
+                    "keyword": keyword,
+                    "source_summary": "AstrBot 面板配置添加",
+                    "occurrences": 0,
+                    "heat": 1.0,
+                    "first_seen": _now_ts(),
+                    "last_seen": _now_ts(),
+                    "manual": True,
+                    "panel": True,
+                }
 
     def _ensure_rules(self, group_id: str) -> dict:
         rules = self.group_rules.setdefault(group_id, {})
@@ -410,6 +464,51 @@ class TimeMemoryPlugin(Star):
         self._save_memory()
 
     async def _handle_natural_rule_command(self, event: AstrMessageEvent, group_id: str, text: str) -> bool:
+        add_match = KEYWORD_ADD_RE.match(text.strip())
+        if add_match:
+            if not self._is_trusted(event):
+                await event.send(event.plain_result("只有白名单用户可以添加关键词。"))
+                event.stop_event()
+                return True
+            keyword = self._normalize_keyword(add_match.group(1))
+            if not keyword:
+                await event.send(event.plain_result("没看清要添加哪个关键词。"))
+                event.stop_event()
+                return True
+            self._upsert_keyword(
+                group_id,
+                keyword,
+                source_summary="白名单用户自然语言添加",
+                heat=1.0,
+                manual=True,
+            )
+            self._save_keywords()
+            await event.send(event.plain_result(f"已添加关键词: {keyword}"))
+            event.stop_event()
+            return True
+
+        delete_match = KEYWORD_DELETE_RE.match(text.strip())
+        if delete_match:
+            if not self._is_trusted(event):
+                await event.send(event.plain_result("只有白名单用户可以删除关键词。"))
+                event.stop_event()
+                return True
+            keyword = self._normalize_keyword(delete_match.group(1))
+            if not keyword:
+                await event.send(event.plain_result("没看清要删除哪个关键词。"))
+                event.stop_event()
+                return True
+            removed = self._delete_keyword(group_id, keyword)
+            if removed:
+                await event.send(event.plain_result(f"已删除关键词: {keyword}"))
+            else:
+                await event.send(event.plain_result(f"关键词库里没有「{keyword}」，但我已记录短期不要自动加入它。"))
+            event.stop_event()
+            return True
+
+        if not self._is_trusted(event):
+            return False
+
         rules = self._ensure_rules(group_id)
         if QUIET_ON_RE.search(text):
             rules["quiet"] = True
@@ -498,6 +597,7 @@ class TimeMemoryPlugin(Star):
     ) -> None:
         now = _now_ts()
         keywords = self._get_keywords(group_id)
+        self._ensure_rules(group_id).setdefault("deleted_keywords", {}).pop(keyword, None)
         existing = keywords.get(keyword)
         if existing:
             existing["occurrences"] = int(existing.get("occurrences", 0)) + 1
@@ -517,7 +617,17 @@ class TimeMemoryPlugin(Star):
             "manual": manual,
         }
 
+    def _delete_keyword(self, group_id: str, keyword: str) -> bool:
+        removed = self._get_keywords(group_id).pop(keyword, None)
+        rules = self._ensure_rules(group_id)
+        rules.setdefault("deleted_keywords", {})[keyword] = _now_ts()
+        self._save_keywords()
+        self._save_rules()
+        return removed is not None
+
     def _is_deleted_keyword(self, group_id: str, keyword: str) -> bool:
+        if keyword in self._panel_words_for_group(self.panel_deleted_keywords, group_id):
+            return True
         deleted = self._ensure_rules(group_id).get("deleted_keywords", {})
         ts = float(deleted.get(keyword, 0) or 0)
         if ts <= 0:
