@@ -28,8 +28,17 @@ COMMAND_PREFIX_RE = re.compile(r"^[\s/!！]+")
 TIME_QUERY_RE = re.compile(
     r"(现在几点|几点了|现在什么时间|今天几号|今天星期几|现在时间|报时|北京时间)"
 )
-QUIET_ON_RE = re.compile(r"(记住|以后|这个群|群里).{0,12}(少说话|少回复|安静点|别太吵)")
-QUIET_OFF_RE = re.compile(r"(恢复|取消|不用).{0,12}(少说话|少回复|安静|沉默)")
+QUIET_ON_RE = re.compile(
+    r"(?:"
+    r"(?:记住|以后|这个群|群里|让(?:它|他|她|你)?|叫(?:它|他|她|你)?|让bot|bot|机器人).{0,20}"
+    r"(?:少说话|少回复|少发言|少吭声|安静点|别太吵|别一直说|闭嘴|少插话)"
+    r"|(?:少说话|少回复|少发言|安静点|别太吵)"
+    r")"
+)
+QUIET_OFF_RE = re.compile(
+    r"(?:恢复|取消|不用|解除|关闭).{0,20}(?:少说话|少回复|安静|沉默|闭嘴|少插话)"
+    r"|(?:正常回复|恢复回复|可以说话了|多说点)"
+)
 KEYWORD_ADD_RE = re.compile(r"^(?:添加|新增|加入|记住)(?:关键词|关键字)\s+(.+)$")
 KEYWORD_DELETE_RE = re.compile(r"^(?:删除|移除|取消|屏蔽)(?:关键词|关键字)\s+(.+)$")
 MENTION_RE = re.compile(r"@\S+")
@@ -220,9 +229,13 @@ class TimeMemoryPlugin(Star):
         quiet = "开启" if rules.get("quiet") else "关闭"
         keywords = self._get_keywords(group_id)
         deleted = rules.get("deleted_keywords", {})
+        quiet_updated_at = self._format_ts(rules.get("quiet_updated_at"))
+        quiet_updated_by = rules.get("quiet_updated_by_name") or rules.get("quiet_updated_by") or "无记录"
         yield event.plain_result(
             "当前群规则\n"
             f"少说话: {quiet}\n"
+            f"少说话更新时间: {quiet_updated_at}\n"
+            f"少说话设置人: {quiet_updated_by}\n"
             f"关键词数量: {len(keywords)}\n"
             f"删除黑名单: {len(deleted)}\n"
             "管理: /添加关键词 <词>，/删除关键词 <词>"
@@ -309,6 +322,20 @@ class TimeMemoryPlugin(Star):
         now = datetime.now(tz)
         weekday = WEEKDAYS_CN[now.weekday()]
         return f"现在是 {now.year}年{now.month}月{now.day}日 {weekday} {now.hour:02d}:{now.minute:02d}。"
+
+    def _format_ts(self, ts: Any) -> str:
+        try:
+            ts_float = float(ts)
+        except Exception:
+            return "无记录"
+        if ts_float <= 0:
+            return "无记录"
+        try:
+            tz = ZoneInfo(self.timezone_name)
+        except Exception:
+            tz = ZoneInfo("Asia/Shanghai")
+        dt = datetime.fromtimestamp(ts_float, tz)
+        return f"{dt.year}-{dt.month:02d}-{dt.day:02d} {dt.hour:02d}:{dt.minute:02d}"
 
     def _message_text(self, event: AstrMessageEvent) -> str:
         if hasattr(event, "get_message_str"):
@@ -506,23 +533,38 @@ class TimeMemoryPlugin(Star):
             event.stop_event()
             return True
 
-        if not self._is_trusted(event):
-            return False
-
         rules = self._ensure_rules(group_id)
         if QUIET_ON_RE.search(text):
-            rules["quiet"] = True
+            if not self._is_trusted(event):
+                await event.send(event.plain_result("只有白名单用户可以修改少说话规则。"))
+                event.stop_event()
+                return True
+            self._set_quiet_rule(event, group_id, True, text)
             self._save_rules()
             await event.send(event.plain_result("记住了，这个群我会少说话。"))
             event.stop_event()
             return True
         if QUIET_OFF_RE.search(text):
-            rules["quiet"] = False
+            if not self._is_trusted(event):
+                await event.send(event.plain_result("只有白名单用户可以修改少说话规则。"))
+                event.stop_event()
+                return True
+            self._set_quiet_rule(event, group_id, False, text)
             self._save_rules()
             await event.send(event.plain_result("好，这个群我恢复正常回复。"))
             event.stop_event()
             return True
         return False
+
+    def _set_quiet_rule(self, event: AstrMessageEvent, group_id: str, quiet: bool, source_text: str) -> None:
+        rules = self._ensure_rules(group_id)
+        user_id = str(event.get_sender_id() if hasattr(event, "get_sender_id") else "")
+        user_name = str(event.get_sender_name() if hasattr(event, "get_sender_name") else user_id)
+        rules["quiet"] = quiet
+        rules["quiet_updated_at"] = _now_ts()
+        rules["quiet_updated_by"] = user_id
+        rules["quiet_updated_by_name"] = user_name
+        rules["quiet_source"] = _clean_text(source_text, 120)
 
     def _maybe_schedule_keyword_extract(self, group_id: str, umo: str) -> None:
         memory = self._ensure_memory(group_id)
